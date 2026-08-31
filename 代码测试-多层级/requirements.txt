@@ -1,0 +1,15 @@
+# 核心依赖
+numpy>=1.24
+pandas>=2.0
+scikit-learn>=1.3
+
+# 参考模型 + 可解释性
+lightgbm>=4.0
+shap>=0.44
+
+# 可视化看板
+streamlit>=1.30
+plotly>=5.18
+
+# 测试
+pytest>=7.4
