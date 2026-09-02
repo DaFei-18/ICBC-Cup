@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os, sys
 import pytest
+import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -9,6 +10,7 @@ from data.generate_mock_data import generate_shop_features
 from src.features.feature_engineering import ALL_FEATURES, TIER_FEATURES
 from src.rules.anomaly_detection import AnomalyRuleEngine, _generate_demo_orders
 from src.toolkit.api import CreditToolkit
+from src.models.scorecard import ScorecardModel  # 确保导入了 ScorecardModel
 
 @pytest.fixture(scope="module")
 def mock_df():

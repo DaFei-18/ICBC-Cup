@@ -113,8 +113,10 @@ def main():
     with col5:
         st.subheader(f"分值拆解 (Top 因素 - {result.model_tier} 模型)")
         breakdown = result.score_breakdown
+        # 兼容两种列名：优先使用“对评分的贡献”，若无则取“分值贡献”
+        contrib_col = "对评分的贡献" if "对评分的贡献" in breakdown.columns else "分值贡献"
         top_factors = breakdown[breakdown["特征"] != "基准截距分"].reindex(
-            breakdown["分值贡献"].abs().sort_values(ascending=False).index
+            breakdown[contrib_col].abs().sort_values(ascending=False).index
         ).head(5)
         st.dataframe(top_factors, use_container_width=True, hide_index=True)
 
