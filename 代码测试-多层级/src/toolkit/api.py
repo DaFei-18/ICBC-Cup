@@ -99,17 +99,60 @@ class CreditToolkit:
             anomaly_result=anomaly_result, natural_language_explanation=explanation,
         )
 
-    def batch_assess(self, X: pd.DataFrame, tier: str = "L3", shop_ids: Optional[list] = None) -> pd.DataFrame:
-        scorecard = self.scorecards.get(tier, self.scorecards["L1"])
-        X_sub = X[scorecard.feature_names_]
-        scores = scorecard.predict_score(X_sub)
-        p_bad = scorecard.predict_proba_bad(X_sub)
-        grades = [scorecard.risk_grade(s) for s in scores]
-        ids = shop_ids if shop_ids is not None else [f"ROW{i}" for i in range(len(X))]
-        return pd.DataFrame({
-            "shop_id": ids, "score": scores, "p_bad": p_bad.round(4),
-            "risk_grade": grades, "model_tier": tier,
-        })
+    def batch_assess(self, X: pd.DataFrame, tier: Optional[str] = None,
+                     shop_ids: Optional[list] = None) -> pd.DataFrame:
+        """
+        批量商户信用评估（升级版：支持全自动逐商户动态路由）
+
+        参数:
+            X: 包含商户特征指标的 DataFrame
+            tier:
+                - 若指定为 'L1' / 'L2' / 'L3'，则强制所有商户采用指定模型；
+                - 若为 None 或 'auto'，则由系统逐行扫描字段丰度，自适应动态路由判定！
+            shop_ids: 可选，商户ID列表；若未提供且 X 中包含 'shop_id' 列，则自动取其作为标识。
+
+        返回:
+            包含各商户评估结果的 DataFrame (shop_id, score, p_bad, risk_grade, model_tier)
+        """
+        # 1. 提取或生成商户 ID 清单
+        if shop_ids is not None:
+            ids = shop_ids
+        elif "shop_id" in X.columns:
+            ids = X["shop_id"].tolist()
+        else:
+            ids = [f"SHOP_{i:04d}" for i in range(len(X))]
+
+        results = []
+        # 2. 逐行遍历商户数据进行动态路由推断
+        for i, (_, row) in enumerate(X.iterrows()):
+            # 自动探测层级：未指定或传 auto 时，调用内置探针 determine_model_tier
+            if tier is not None and tier != "auto":
+                selected_tier = tier
+            else:
+                selected_tier = determine_model_tier(row)
+
+            scorecard = self.scorecards.get(selected_tier, self.scorecards["L1"])
+
+            # 3. 特征对齐与兜底：避免缺失列引发 KeyError，缺失字段自动置为 NaN 由 WOEBinner 兜底
+            aligned_dict = {col: row.get(col, np.nan) for col in scorecard.feature_names_}
+            X_row = pd.DataFrame([aligned_dict])[scorecard.feature_names_]
+
+            # 4. 执行预测与评级
+            score = int(scorecard.predict_score(X_row)[0])
+            p_bad = float(scorecard.predict_proba_bad(X_row)[0])
+            risk_grade = scorecard.risk_grade(score)
+
+            results.append({
+                "shop_id": ids[i],
+                "score": score,
+                "p_bad": round(p_bad, 4),
+                "risk_grade": risk_grade,
+                "model_tier": selected_tier
+            })
+
+        return pd.DataFrame(results)
+
+
 
 
 if __name__ == "__main__":
