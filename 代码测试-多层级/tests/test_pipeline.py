@@ -10,7 +10,7 @@ from data.generate_mock_data import generate_shop_features
 from src.features.feature_engineering import ALL_FEATURES, TIER_FEATURES
 from src.rules.anomaly_detection import AnomalyRuleEngine, _generate_demo_orders
 from src.toolkit.api import CreditToolkit
-from src.models.scorecard import ScorecardModel  # 确保导入了 ScorecardModel
+from src.models.scorecard import ScorecardModel
 
 @pytest.fixture(scope="module")
 def mock_df():
@@ -63,9 +63,44 @@ def test_batch_assess_with_tiers(mock_df):
     assert set(batch_res.columns) == {"shop_id", "score", "p_bad", "risk_grade", "model_tier"}
 
 def test_scorecard_monotonicity(mock_df):
-    """5. 验证好坏客户评分的区分度（好客户平均分应高于坏客户）"""
+    """5. 验证好坏客户评分的区分度"""
     toolkit = CreditToolkit.train_new(mock_df, mock_df["is_bad"])
     scores = toolkit.scorecards["L3"].predict_score(mock_df[ALL_FEATURES])
     good_mean = scores[mock_df["is_bad"] == 0].mean()
     bad_mean = scores[mock_df["is_bad"] == 1].mean()
     assert good_mean > bad_mean
+
+def test_iv_dynamic_feature_selection(mock_df):
+    """6. 验证 IV 动态筛选机制：无效无区分度特征应被自动剔除"""
+    df = mock_df.copy()
+    # 构造绝对无信息量特征：全常数特征与高频均匀对称特征（IV恒为0）
+    df["zero_info_const"] = 100.0
+    df["zero_info_flip"] = np.tile([1, 2], len(df) // 2)
+    
+    candidate_cols = ALL_FEATURES + ["zero_info_const", "zero_info_flip"]
+    X = df[candidate_cols]
+    y = df["is_bad"]
+    
+    # 设定 iv_threshold=0.02
+    model = ScorecardModel(iv_threshold=0.02).fit(X, y)
+    
+    # 1. 验证这两个无区分度特征被坚决剔除出入模列表
+    assert "zero_info_const" not in model.feature_names_
+    assert "zero_info_flip" not in model.feature_names_
+    assert "zero_info_const" not in model.binners_
+    assert "zero_info_flip" not in model.binners_
+    
+    # 2. 验证剔除报表能够如实记录，且被剔除特征 IV 处于低区分度区间
+    dropped_df = model.dropped_features_report()
+    dropped_names = set(dropped_df["剔除特征"].tolist())
+    assert "zero_info_const" in dropped_names
+    assert "zero_info_flip" in dropped_names
+
+def test_iv_threshold_boundary_all_dropped(mock_df):
+    """7. 验证边界保护：IV阈值设定过高全部剔除时抛出规范 ValueError"""
+    X = mock_df[ALL_FEATURES]
+    y = mock_df["is_bad"]
+    model = ScorecardModel(iv_threshold=10.0)
+    with pytest.raises(ValueError) as excinfo:
+        model.fit(X, y)
+    assert "IV阈值过高，所有特征都被剔除" in str(excinfo.value)
