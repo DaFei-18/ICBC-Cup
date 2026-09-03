@@ -1,4 +1,3 @@
-```markdown
 # 《E心助贷》—— 面向电商小微企业的大数据智能风控与融资服务平台
 
 本项目是一个面向电商小微企业的大数据智能风控与融资服务平台，为“工行杯”全国大学生金融科技创新大赛参赛项目[cite: 1, 2]。系统旨在利用电商多源真实经营流水替代传统不动产抵押物，破解小微企业“首贷难、无抵押、数据碎片化”痛点，提供透明、合规、自适应的数字化风控全流程解决方案[cite: 1]。
@@ -48,10 +47,8 @@
 │     - 大语言模型 (LLM) 智能风控报告生成 (含离线规则模板降级) │
 │     - Streamlit 交互式大屏：五维雷达图、层级切换与分值归因 │
 └────────────────────────────────────────────────────────────┘
-
 ```
 
----
 
 ## ✨ 核心技术与业务亮点
 
@@ -116,9 +113,9 @@ ICBC-Cup/
 │   └── test_pipeline.py        # 8项全链路自动化测试套件 (含清洗/路由/单调性)
 ├── requirements.txt            # 运行环境依赖列表
 └── README.md                   # 项目工程说明文档
-```[cite: 1, 2]
+```
 
----
+
 
 ## 🚀 快速上手与运行指南
 
@@ -126,21 +123,24 @@ ICBC-Cup/
 建议在 Python 3.9+ 虚拟环境中运行：
 ```bash
 pip install -r requirements.txt
-```[cite: 1, 2]
+```
 
 ### 2. 执行全套自动化单元测试
-一键验证数据清洗网关、防刷单规则、三层路由降级、IV 筛选及评分卡单调性[cite: 1, 2]：
+一键验证数据清洗网关、防刷单规则、三层路由降级、IV 筛选及评分卡单调性：
 ```bash
 pytest tests/test_pipeline.py -v
-```[cite: 1, 2]
+```
 *(预期结果：8 项测试用例全部 PASSED 通过)*
 
 ### 3. 一站式端到端真实数据接入示例
+
 ```python
 import pandas as pd
 from src.toolkit.api import CreditToolkit
+```
 
 # 1. 接入外部原始异构流水 (支持淘宝、京东、Olist等任意格式)
+```python
 raw_orders = pd.DataFrame({
     "seller_id": ["SHOP_001", "SHOP_001", "SHOP_002"],
     "order_purchase_timestamp": ["2026-01-01 10:00:00", "2026-01-02 12:00:00", "2026-01-03 15:00:00"],
@@ -149,20 +149,25 @@ raw_orders = pd.DataFrame({
     "order_status": ["delivered", "canceled", "delivered"],
     "order_delivered_customer_date": ["2026-01-03", None, "2026-01-05"]
 })
+```
 
 # 2. 加载风控评估引擎
+```python
 toolkit = CreditToolkit.load_pretrained()
+```
 
 # 3. 一键完成清洗、规则审查、特征工程与自适应路由打分
+```python
 results = toolkit.assess_raw_orders(raw_orders)
 print(results[["shop_id", "score", "risk_grade", "model_tier", "风险建议"]])
-```[cite: 1, 2]
+```
 
 ### 4. 启动可视化交互风控大屏
 ```bash
 streamlit run dashboard/app.py
-```[cite: 1, 2]
+```
 访问本地 `http://localhost:8501`，即可体验：
+
 *   **商户五维画像雷达图**（经营稳定性、交易质量、规模成长、客户结构、资金合规）[cite: 1, 2]；
 *   **模型层级动态切换**（演示数据缺失时系统如何平滑自适应降级）[cite: 1, 2]；
 *   **Top 5 风险归因线性拆解**与 **AI 诊断意见生成**[cite: 1, 2]。
