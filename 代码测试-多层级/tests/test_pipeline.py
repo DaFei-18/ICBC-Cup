@@ -11,6 +11,8 @@ from src.features.feature_engineering import ALL_FEATURES, TIER_FEATURES
 from src.rules.anomaly_detection import AnomalyRuleEngine, _generate_demo_orders
 from src.toolkit.api import CreditToolkit
 from src.models.scorecard import ScorecardModel
+from src.features.data_cleaner import ECommerceDataCleaner
+
 
 @pytest.fixture(scope="module")
 def mock_df():
@@ -104,3 +106,29 @@ def test_iv_threshold_boundary_all_dropped(mock_df):
     with pytest.raises(ValueError) as excinfo:
         model.fit(X, y)
     assert "IV阈值过高，所有特征都被剔除" in str(excinfo.value)
+
+
+def test_data_cleaner_and_end_to_end_pipeline(mock_df):
+    """验证数据清洗网关对异构字段的清洗映射与端到端贯通性"""
+    raw_mock_orders = pd.DataFrame({
+        "seller_id": ["SHOP_TEST_01", "SHOP_TEST_01"],
+        "order_purchase_timestamp": ["2026-01-01 10:00:00", "2026-01-02 12:00:00"],
+        "user_id": ["USER_A", "USER_B"],
+        "price": ["$120.50", "89.00"],
+        "order_status": ["delivered", "canceled"],
+        "order_delivered_customer_date": ["2026-01-03", None]
+    })
+
+    cleaner = ECommerceDataCleaner()
+    clean_df = cleaner.clean_orders(raw_mock_orders)
+
+    assert list(clean_df.columns) == ["shop_id", "customer_id", "order_time", "order_amount", "is_refund",
+                                      "has_logistics_record"]
+    assert clean_df["order_amount"].iloc[0] == 120.50
+    assert clean_df["is_refund"].tolist() == [False, True]
+    assert clean_df["has_logistics_record"].tolist() == [True, False]
+
+    toolkit = CreditToolkit.train_new(mock_df, mock_df["is_bad"])
+    res = toolkit.assess_raw_orders(raw_mock_orders)
+    assert len(res) == 1
+    assert res.iloc[0]["shop_id"] == "SHOP_TEST_01"

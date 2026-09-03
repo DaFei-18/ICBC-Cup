@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-import os
-import sys
+import os, sys
 from dataclasses import dataclass
 from typing import Optional, Dict
+import numpy as np
 import pandas as pd
 
-# 强制将当前项目根目录置于 sys.path 首位，防止 PyCharm 路径串包
+# 防跨目录串包保护
 _project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
@@ -14,8 +14,8 @@ if _project_root not in sys.path:
 from src.models.scorecard import ScorecardModel
 from src.rules.anomaly_detection import AnomalyRuleEngine
 from src.llm.explain import explain_score, LLMConfig
-from src.features.feature_engineering import TIER_FEATURES, determine_model_tier
-
+from src.features.feature_engineering import TIER_FEATURES, determine_model_tier, aggregate_from_orders_vectorized
+from src.features.data_cleaner import ECommerceDataCleaner
 
 @dataclass
 class AssessmentResult:
@@ -41,13 +41,14 @@ class AssessmentResult:
             "explanation": self.natural_language_explanation,
         }
 
-
 class CreditToolkit:
-    """E心助贷 - 统一多层路由风控评估引擎"""
-
-    def __init__(self, scorecards: Dict[str, ScorecardModel], rule_engine: Optional[AnomalyRuleEngine] = None):
+    """E心助贷 - 统一多层路由风控评估引擎（含数据清洗与容错）"""
+    def __init__(self, scorecards: Dict[str, ScorecardModel],
+                 rule_engine: Optional[AnomalyRuleEngine] = None,
+                 cleaner: Optional[ECommerceDataCleaner] = None):
         self.scorecards = scorecards
         self.rule_engine = rule_engine or AnomalyRuleEngine()
+        self.cleaner = cleaner or ECommerceDataCleaner()
 
     @classmethod
     def train_new(cls, df: pd.DataFrame, y: pd.Series, **scorecard_kwargs) -> "CreditToolkit":
@@ -70,21 +71,19 @@ class CreditToolkit:
                orders: Optional[pd.DataFrame] = None,
                explain: bool = False,
                llm_config: Optional[LLMConfig] = None) -> AssessmentResult:
-
         row = pd.Series(shop_features) if isinstance(shop_features, dict) else shop_features
-
-        # 1. 自动路由或指定层级
         selected_tier = tier or determine_model_tier(row)
         scorecard = self.scorecards.get(selected_tier, self.scorecards["L1"])
 
-        # 2. 特征对齐与评分预测
-        X_row = pd.DataFrame([row])[scorecard.feature_names_]
+        # 缺失特征填补为 NaN 兜底，防止 KeyError
+        aligned = {col: row.get(col, np.nan) for col in scorecard.feature_names_}
+        X_row = pd.DataFrame([aligned])[scorecard.feature_names_]
+
         score = int(scorecard.predict_score(X_row)[0])
         p_bad = float(scorecard.predict_proba_bad(X_row)[0])
         risk_grade = scorecard.risk_grade(score)
-        breakdown = scorecard.score_breakdown(row)
+        breakdown = scorecard.score_breakdown(pd.Series(aligned))
 
-        # 3. 规则检测与大模型解释
         anomaly_result = self.rule_engine.evaluate_shop(orders) if orders is not None else None
         explanation = None
         if explain:
@@ -99,22 +98,8 @@ class CreditToolkit:
             anomaly_result=anomaly_result, natural_language_explanation=explanation,
         )
 
-    def batch_assess(self, X: pd.DataFrame, tier: Optional[str] = None,
-                     shop_ids: Optional[list] = None) -> pd.DataFrame:
-        """
-        批量商户信用评估（升级版：支持全自动逐商户动态路由）
-
-        参数:
-            X: 包含商户特征指标的 DataFrame
-            tier:
-                - 若指定为 'L1' / 'L2' / 'L3'，则强制所有商户采用指定模型；
-                - 若为 None 或 'auto'，则由系统逐行扫描字段丰度，自适应动态路由判定！
-            shop_ids: 可选，商户ID列表；若未提供且 X 中包含 'shop_id' 列，则自动取其作为标识。
-
-        返回:
-            包含各商户评估结果的 DataFrame (shop_id, score, p_bad, risk_grade, model_tier)
-        """
-        # 1. 提取或生成商户 ID 清单
+    def batch_assess(self, X: pd.DataFrame, tier: Optional[str] = None, shop_ids: Optional[list] = None) -> pd.DataFrame:
+        """批量评估：支持全自动自适应路由与缺失列容错"""
         if shop_ids is not None:
             ids = shop_ids
         elif "shop_id" in X.columns:
@@ -123,21 +108,13 @@ class CreditToolkit:
             ids = [f"SHOP_{i:04d}" for i in range(len(X))]
 
         results = []
-        # 2. 逐行遍历商户数据进行动态路由推断
         for i, (_, row) in enumerate(X.iterrows()):
-            # 自动探测层级：未指定或传 auto 时，调用内置探针 determine_model_tier
-            if tier is not None and tier != "auto":
-                selected_tier = tier
-            else:
-                selected_tier = determine_model_tier(row)
-
+            selected_tier = tier if tier and tier != "auto" else determine_model_tier(row)
             scorecard = self.scorecards.get(selected_tier, self.scorecards["L1"])
 
-            # 3. 特征对齐与兜底：避免缺失列引发 KeyError，缺失字段自动置为 NaN 由 WOEBinner 兜底
-            aligned_dict = {col: row.get(col, np.nan) for col in scorecard.feature_names_}
-            X_row = pd.DataFrame([aligned_dict])[scorecard.feature_names_]
+            aligned = {col: row.get(col, np.nan) for col in scorecard.feature_names_}
+            X_row = pd.DataFrame([aligned])[scorecard.feature_names_]
 
-            # 4. 执行预测与评级
             score = int(scorecard.predict_score(X_row)[0])
             p_bad = float(scorecard.predict_proba_bad(X_row)[0])
             risk_grade = scorecard.risk_grade(score)
@@ -149,35 +126,12 @@ class CreditToolkit:
                 "risk_grade": risk_grade,
                 "model_tier": selected_tier
             })
-
         return pd.DataFrame(results)
 
-
-
-
-if __name__ == "__main__":
-    print("正在初始化并训练多层级风控模型...")
-    toolkit = CreditToolkit.load_pretrained()
-
-    demo_shop = {
-        "open_months": 18, "avg_monthly_orders": 1240, "order_volatility": 0.22,
-        "avg_order_value": 128.5, "gmv_mom_volatility": 0.10, "revenue_trend_slope": 0.8,
-        "repurchase_rate": 0.31, "refund_rate": 0.045, "dispute_rate": 0.012,
-        "gmv_yoy_growth": 0.15, "customer_hhi": 0.09, "customer_geo_entropy": 2.3,
-        "interruption_count": 0, "positive_review_rate": 0.93, "sku_change_rate": 0.05,
-        "new_customer_ratio": 0.4, "avg_settlement_days": 4.2,
-        "platform_penalty_count": 0, "abnormal_large_txn_ratio": 0.015,
-    }
-
-    # 1. 测试全特征自动路由评估
-    result = toolkit.assess(demo_shop, shop_id="SHOP_DEMO_01", explain=True)
-    print("\n========== 评估结果 ==========")
-    print(f"商户编号: {result.shop_id}")
-    print(f"匹配模型层级: {result.model_tier}")
-    print(f"综合信用评分: {result.score} 分")
-    print(f"风险等级: {result.risk_grade}")
-    print(f"违约概率预测: {result.p_bad:.2%}")
-    print("\n[分值贡献明细 Top5]")
-    print(result.score_breakdown.head(6).to_string(index=False))
-    print("\n[智能风控诊断意见]")
-    print(result.natural_language_explanation)
+    def assess_raw_orders(self, raw_orders_df: pd.DataFrame, tier: Optional[str] = None) -> pd.DataFrame:
+        """端到端评估：清洗 -> 规则排查 -> 向量化特征提炼 -> 自动路由打分"""
+        clean_orders = self.cleaner.clean_orders(raw_orders_df)
+        anomaly_report = self.rule_engine.batch_evaluate(clean_orders, shop_id_col="shop_id")
+        features = aggregate_from_orders_vectorized(clean_orders)
+        scores_df = self.batch_assess(features, tier=tier)
+        return pd.merge(scores_df, anomaly_report[["shop_id", "触发规则数", "风险建议"]], on="shop_id", how="left")
